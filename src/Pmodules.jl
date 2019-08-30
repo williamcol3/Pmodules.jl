@@ -1,29 +1,7 @@
 module Pmodules
 
-export @P, @ensure_ident
+export @Pmodule, @P
 
-""" Top-level dispatch to the Pmodule system.
-
-Supported expressions include module, import, and using.
-"""
-macro P(ex)
-    if isa(ex, Expr)
-        if ex.head == :module
-            # Module expression
-            modex = process_pmodule(ex, __source__, __module__)
-            # make sure the module expression is evaluated in the caller scope
-            return Expr(:toplevel, esc(modex))
-
-        elseif ex.head == :import || ex.head == :using
-            # Import expression
-            return process_pimport(ex, __source__, __module__)
-        else
-            error("Unsupported expression in Pmodule system.")
-        end
-    else
-        error("Invalid input to Pmodule macro.")
-    end
-end
 
 """ Find the first undefined identifier in the lineage of another.
 
@@ -32,15 +10,20 @@ an identifier. This function will find and return the first undefined
 identifier in the path of the full name, or Nothing if the given identifier
 is defined.
 """
-function first_undefined(fullid)
-    search_mod = Main
-    ret = Symbol[]
-    for modsym = fullid
+function first_undefined(fullid, base_module::Module)
+    search_mod = base_module
+
+    # Make sure that the first id in fullid is the base
+    # module
+    if fullid[1] != nameof(base_module)
+        error("Incorrect base module given to undefined search.")
+    end
+
+    for (i, modsym) = enumerate(fullid[2:end])
         if isdefined(search_mod, modsym)
-            push!(ret, modsym)
             search_mod = Base.getproperty(search_mod, modsym)
         else
-            return ret
+            return fullid[1:i+1]
         end
     end
     return nothing
@@ -53,173 +36,149 @@ probably a module). Kind of makes an assumption that the top of
 the path has been included/imported. Generally this should only
 be used to get an identifier within the current top-level package.
 """
-function get_id(fullid)
-    searchmod = Main
-    for sym = fullid
+function get_id(fullid, base_module::Module)
+    search_mod = base_module
+
+    # Make sure that the first id in fullid is the base
+    # module
+    if fullid[1] != nameof(base_module)
+        error("Incorrect base module given to undefined search.")
+    end
+
+    for sym = fullid[2:end]
         # Might throw if this function was called inappropriately
-        searchmod = getproperty(searchmod, sym)
+        search_mod = getproperty(search_mod, sym)
     end
-    return searchmod
+    return search_mod
 end
 
-macro ensure_ident(fullid)
-    # First, make sure the given identifier is within this package.
-    if Base.nameof(Base.moduleroot(__module__)) != first(fullid)
-        error("ensure_ident can only be used for identifiers internal to the package.")
+""" Ensure that the given identifier name will be available for import."""
+function ensure_ident(ident_name, calling_module)
+    mroot = Base.moduleroot(calling_module)
+    # Make sure we are dealing with an internal identifier
+    if nameof(mroot) != ident_name[1]
+        error("Ensuring identifier of a non-internal indentifier." *
+              " Ensuring $(ident_name) in $(fullname(calling_module)) in file $(pathof(calling_module))")
     end
 
-    # Get the first undefined identifier
-    first_undef = first_undefined(fullid)
+    first_undef = first_undefined(ident_name, mroot)
 
-    # We don't need to do anything because the ident is already available
-    if first_undef === nothing
-        return
-    end
+    if first_undef != nothing
+        # We need to find a file to include
+        root_dir = dirname(pathof(mroot))
 
-    # Now we need to make an include to get the identifier defined. We make
-    # an assumption that the identifier is a module and is part of the Pmodule
-    # system.
-    
-    # Get the space in which the include will be performed. We know this is
-    # is defined and available
-    include_space = get_id(first_undef[1:end-1])
+        include_pen_dir = joinpath(root_dir, map(String, ident_name[2:end-1])...)
 
-    # Determine the path to the file to include relative to this file
-    # First we need to know if we are a parent module or leaf module.
-    is_pmod = is_parent(String(__source__.file))
+        # Always search for bath in case of weird edge cases so we can notify the users.
 
-    # We need two things: first, how far back from the current module we
-    # need to go to find commonality with fullid, and, second, the rest
-    # of fullid from that point
-    modfull = fullname(__module__)
-    common_idx = 0
-    uncommon_targ = nothing
-    for (i, (fid, mf)) = enumerate(zip(first_undef, modfull))
-        if ! fid == mf
-            uncommon_targ = fid
-            break
+        proposed_leaf = joinpath(include_pen_dir, String(ident_name[end]) * ".jl")
+        proposed_parent = joinpath(include_pen_dir, String(ident_name[end]), String(ident_name[end]) * ".jl")
+
+        is_proposed_leaf = isfile(proposed_leaf)
+        is_proposed_parent = isfile(proposed_parent)
+
+        if is_proposed_leaf && (!is_proposed_parent)
+            include_dir = proposed_leaf
+        elseif is_proposed_parent && (!is_proposed_leaf)
+            include_dir = proposed_parent
+        elseif is_proposed_leaf && is_proposed_parent
+            error("Two files exist that would result in the same logical name: $(proposed_leaf) and $(proposed_parent).")
+        else
+            error("Could not find file that would ensure identifier $(ident_name)")
         end
-        common_idx = i
-    end
-    # Construct the module path.
 
-    # Go backwards to commonality, then forwards the rest of the way
-    relmodpath = Symbol[repeat(Symbol[:(..)], length(modfull) - common_idx)...,
-                        Iterators.rest(first_undef, uncommon_targ)...]
-    
-    # Now convert the relative module path to a relative file path
+        include_mod = get_id(first_undef[1:end-1], mroot)
 
-    if ! is_pmod
-        # All corner cases resolve nicely. If the current module is a leaf module, there
-        # is always at least one ".." so we never erase relevant data. If the current target
-        # module is a child of the current module, then the current module is, by definition
-        # a parent module and thus this code path is not exercised.
-
-        # We need to pop the first because leaf modules are in the same directory as their
-        # siblings. 
-        popfirst!(relmodpath)
+        Base.include(include_mod, include_dir)
     end
 
-    # We now need to handle if the target is a parent module. There isn't really any way
-    # to know except to just search the file system.
-    
-    # First we try leaf
-    relfilepath = joinpath(map(String, relmodpath)...) * ".jl"
-    # Search for the leaf file relative to the calling source file
-    if ! isfile(joinpath(String(__source__.file), relfilepath))
-        # If it isn't there, try as if the target is a parent module
-        relfilepath = joinpath(map(String, relmodpath)..., String(relmodpath[end])) * ".jl"
-    
-        if ! isfile(joinpath(String(__source__.file), relfilepath))
-            # Well the target include doesn't exist
-            error("Could not find file to include for desired identifier.")
-        end
-    end
-    
-    # Make the include call. Note that we include it in the parent of the module we are trying to include.
-    return esc(:(Base.include($include_space, $relfilepath)))
+    # Otherwise the identifier is already defined and thus ensured.
+
 end
+
+""" Gives the ultimate name in the path, without the extension (if there is one)."""
+finalname(path) = splitext(basename(path))[1]
 
 """ Determine whether the given module is a parent.
 
 Filepath should be an absolute path.
 """
-function is_parent(filepath::String)::Bool
+function is_parent(filepath::String, mod_fullname)::Bool
+    # TODO: fix this shit
     # Perform validity check
     isabspath(filepath) || error("Given path must be an absolute path.")
     # Get the relevant parts of the filepath
     directory = basename(dirname(filepath))
     filebase = splitext(basename(filepath))[1]
 
-    return directory == "src" || directory == filebase
+    # This only will occur on a top-level declaration, so the length must be 3
+    # (Base, __toplevel__, module name)
+    if length(mod_fullname) == 3 && mod_fullname[1:2] == fullname(Base.__toplevel__)
+        # Top level Pmodule so it must be a parent
+        return true
+    end
+
+    if directory == "src"
+        # If the above doesn't apply and the directory is src, then the full name with
+        # one entry is the parent, and the rest are leaves.
+        return length(mod_fullname) == 1
+    end
+
+    # Otherwise we can use normal logic
+    return directory == filebase && filebase == String(last(mod_fullname))
 end
 
-""" Pmodule declaration processing.
+""" Define a parent module in the Pmodule system."""
+macro Pmodule()
+    # First check to see that it satisfies the parent module requirement.
+    fullmod = fullname(__module__)
+    filepath = String(__source__.file)
 
-This should:
-    1. Check if the module is a parent module or leaf module (by analyzing the file system)
-    2. If it is a leaf module, just check the name matches the expected
-    3. If it is a parent, add include calls for all direct children in the returned Expr
+    # Make sure we are being called from a file
+    if ! isfile(filepath)
+        error("Pmodule called in non-file context.")
+    end
+
+    filename = finalname(filepath)
+    directory = finalname(dirname(filepath))
+
+    # Make sure we are called in a parent module.
+    # TODO: More sophisticated parent detection?
+    println(directory)
+    println(fullmod)
+    if ! is_parent(filepath, fullmod)
+        error("Pmodule called in non-parent module.")
+    end
+
+    # Find all other julia files in this directory
+    fulldir = dirname(filepath)
+    # Use only .jl files that are not the current one
+    modfiles = [finalname(fp) for fp in readdir(fulldir) if (endswith(fp, ".jl") && fp != basename(filepath))]
+
+    return esc(Expr(:block,
+        :(import Pmodules),
+        [:(Pmodules.ensure_ident(
+            $(tuple(fullmod..., Symbol(mname))),
+            $(__module__)))
+        for mname in modfiles]...))
+end
+
+
+""" Support for ensuring on internal imports.
 """
-function process_pmodule(module_ex::Expr, source::LineNumberNode, module_::Module)
-    # Exclude baremodules
-    if ! module_ex.args[1]
-        error("Baremodule Pmodules are not currently supported.")
-    end
-
-    source_file = String(source.file)
-
-    # Make sure the module/file name match
-    module_sym = module_ex.args[2]
-    if String(module_sym) != splitext(basename(source_file))[1]
-        error("Module names must match the file name in which they are defined in the Pmodule system.")
-    end
-
-    # Determine if the module is a parent module
-    is_parent_module = is_parent(String(source.file))
-
-    # If it is a parent module, then we modify the module expression to include
-    # all direct children modules.
-    
-    # Copy the module expression since this is not a mutating function
-    modex = deepcopy(module_ex)
-
-    # Ensure that Pmodules has been imported so we can always call @ensure_ident
-    # Insert right after the module LineNumberNode
-    insert!(modex.args[3].args, 2, :(import Pmodules))
-
-    if is_parent_module
-        # We need to find all the files to include
-        filedir = dirname(source_file)
-        dirfiles = readdir(filedir)
-        modules_to_ensure = Any[]
-        base_fullname = Base.fullname(module_)
-        for pathname = dirfiles
-            fullpath = joinpath(filedir, pathname)
-            if isfile(fullpath) && fullpath != source_file
-                # This is a leaf module child
-                namebase, ext = splitext(pathname)
-                # Only consider julia files
-                if ext == ".jl"
-                    push!(modules_to_ensure, tuple(base_fullname..., Symbol(namebase)))
-                end
-            elseif isdir(fullpath)
-                # Search in the dir for <dirname>/<dirname>.jl
-                searchpath = joinpath(pathname, "$pathname.jl")
-                isfile(joinpath(filedir, searchpath)) &&
-                    push!(modules_to_ensure, tuple(base_fullname..., Symbol(pathname)))
-            end
+macro P(ex)
+    if isa(ex, Expr)
+        if ex.head == :import || ex.head == :using
+            # Import expression
+            return esc(process_pimport(ex, __source__, __module__))
+        else
+            error("Unsupported expression in Pmodule system.")
         end
-
-        # Add the include expressions after the Pmodule import
-        for mname = modules_to_ensure
-            # Assume Pmodules has been imported
-            insert!(modex.args[3].args, 3, :(Pmodules.@ensure_ident $mname))
-        end
+    else
+        error("Invalid input to Pmodule macro.")
     end
-    return modex
-
 end
+
 
 """ Process a Pmodule import.
 
@@ -243,10 +202,9 @@ function process_pimport(import_ex::Expr, source::LineNumberNode, module_::Modul
     # of this module
     rootmod = Base.nameof(Base.moduleroot(module_))
     internal_mspecs = filter(t->t[1] == rootmod, module_specs)
-
     # Now ensure all identifers import the import expression
     # Assume Pmodules has been imported
-    return Expr(:block, [:(Pmodules.@ensure_ident $mname) for mname in internal_mspecs]..., import_ex)
+    return Expr(:block, :(import Pmodules), [:(Pmodules.ensure_ident($(mname), $(module_))) for mname in internal_mspecs]..., import_ex)
 end
 
 """ Process a single part of a module import expr.
