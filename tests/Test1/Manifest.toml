@@ -1,0 +1,8 @@
+# This file is machine-generated - editing it directly is not advised
+
+[[Pmodules]]
+git-tree-sha1 = "c1225b7a523906f6553abaa999d50f5470fd55fa"
+repo-rev = "master"
+repo-url = "../.."
+uuid = "11bc52b0-ba52-11e9-20f9-d7d026bd81fd"
+version = "0.1.0"
