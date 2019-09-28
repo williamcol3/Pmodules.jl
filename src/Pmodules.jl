@@ -23,7 +23,7 @@ function first_undefined(fullid, base_module::Module)
         if isdefined(search_mod, modsym)
             search_mod = Base.getproperty(search_mod, modsym)
         else
-            return fullid[1:i+1]
+            return fullid[1:i + 1]
         end
     end
     return nothing
@@ -67,7 +67,7 @@ function ensure_ident(ident_name, calling_module)
         # We need to find a file to include
         root_dir = dirname(pathof(mroot))
 
-        include_pen_dir = joinpath(root_dir, map(String, ident_name[2:end-1])...)
+        include_pen_dir = joinpath(root_dir, map(String, ident_name[2:end - 1])...)
 
         # Always search for bath in case of weird edge cases so we can notify the users.
 
@@ -87,13 +87,11 @@ function ensure_ident(ident_name, calling_module)
             error("Could not find file that would ensure identifier $(ident_name)")
         end
 
-        include_mod = get_id(first_undef[1:end-1], mroot)
+        include_mod = get_id(first_undef[1:end - 1], mroot)
 
         Base.include(include_mod, include_dir)
     end
-
     # Otherwise the identifier is already defined and thus ensured.
-
 end
 
 """ Gives the ultimate name in the path, without the extension (if there is one)."""
@@ -144,8 +142,6 @@ macro Pmodule()
 
     # Make sure we are called in a parent module.
     # TODO: More sophisticated parent detection?
-    println(directory)
-    println(fullmod)
     if ! is_parent(filepath, fullmod)
         error("Pmodule called in non-parent module.")
     end
@@ -153,12 +149,13 @@ macro Pmodule()
     # Find all other julia files in this directory
     fulldir = dirname(filepath)
     # Use only .jl files that are not the current one
-    modfiles = [finalname(fp) for fp in readdir(fulldir) if (endswith(fp, ".jl") && fp != basename(filepath))]
+    modfiles = [finalname(fp) for fp in readdir(fulldir)
+                if (endswith(fp, ".jl") && fp != basename(filepath))]
 
+    # Ensure all identifiers before running the import statement
     return esc(Expr(:block,
         :(import Pmodules),
-        [:(Pmodules.ensure_ident(
-            $(tuple(fullmod..., Symbol(mname))),
+        [:(Pmodules.ensure_ident($(tuple(fullmod..., Symbol(mname))),
             $(__module__)))
         for mname in modfiles]...))
 end
