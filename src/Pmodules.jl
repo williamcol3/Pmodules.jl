@@ -44,7 +44,7 @@ function get_id(fullid, base_module::Module)
     if fullid[1] != nameof(base_module)
         error("Incorrect base module given to undefined search.")
     end
-
+    
     for sym = fullid[2:end]
         # Might throw if this function was called inappropriately
         search_mod = getproperty(search_mod, sym)
@@ -52,14 +52,34 @@ function get_id(fullid, base_module::Module)
     return search_mod
 end
 
+""" Resolve relative identifier from the given base."""
+function resolve_relative(maybe_relative, relative_base)
+    # If we are absolute, just return the ident
+    if maybe_relative[1] != :(.)
+        return maybe_relative
+    end
+    # Otherwise, the number of dots minus 1 is the 
+    # number of symbols taken off the end of relative base
+    count_dots = 1
+    for sym = maybe_relative[2:end]
+        if sym == :(.)
+            count_dots += 1
+        end
+    end
+
+    return (relative_base[1:end-count_dots+1]..., maybe_relative[count_dots+1:end]...)
+end
+
 """ Ensure that the given identifier name will be available for import."""
 function ensure_ident(ident_name, calling_module)
     mroot = Base.moduleroot(calling_module)
     # Make sure we are dealing with an internal identifier
-    if nameof(mroot) != ident_name[1]
+    if ident_name[1] ∉ (nameof(mroot), :(.))
         error("Ensuring identifier of a non-internal indentifier." *
-              " Ensuring $(ident_name) in $(fullname(calling_module)) in file $(pathof(calling_module))")
+              " Ensuring $(ident_name) in $(fullname(calling_module)).")
     end
+
+    ident_name = resolve_relative(ident_name, fullname(calling_module))
 
     first_undef = first_undefined(ident_name, mroot)
 
@@ -198,7 +218,7 @@ function process_pimport(import_ex::Expr, source::LineNumberNode, module_::Modul
     # For each module spec, simply remove all of those that do not share a module root with the module root
     # of this module
     rootmod = Base.nameof(Base.moduleroot(module_))
-    internal_mspecs = filter(t->t[1] == rootmod, module_specs)
+    internal_mspecs = filter(t->t[1] ∈ (rootmod, :(.)), module_specs)
     # Now ensure all identifers import the import expression
     # Assume Pmodules has been imported
     return Expr(:block, :(import Pmodules), [:(Pmodules.ensure_ident($(mname), $(module_))) for mname in internal_mspecs]..., import_ex)
