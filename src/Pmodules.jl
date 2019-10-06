@@ -239,19 +239,19 @@ function process_mexpr(ex::Expr, allow_idents::Bool)
         return [tuple(ex.args...)]
     elseif ex.head == :(:)
         # Check for colon in multiple-argument import
-        if !allow_idents
+        if allow_idents
             error("Import statement colon identifier specifier in import with multiple arguments.")
         end
 
         # First we get the base identifier
-        base_id = tuple(ex.args[1]...)
+        base_id = tuple(ex.args[1].args...)
 
         # For each id on the right side of the colon, we join it with the base module
         # Note that even if the terminal identifier of a right-side part is not a module, that is
         # okay because include logic will make it so the only conflict that will occur is when
         # a name is imported from the same module that the import resides in, which is a corner
         # case that I am okay with.
-        return [tuple(base_id..., rhs_id...) for rhs_id in ex.args[2:end]]
+        return [tuple(base_id..., rhs_id.args...) for rhs_id in ex.args[2:end]]
     else
         error("Invalid import statement.")
     end

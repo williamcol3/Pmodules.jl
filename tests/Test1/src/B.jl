@@ -1,4 +1,4 @@
-module Zibling
+module B
 
 value = 2
 
