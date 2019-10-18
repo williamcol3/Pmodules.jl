@@ -1,7 +1,7 @@
 module Test1
 
 using Pmodules
-@Pmodule
+@Parent
 
 @P import Test1.C: value
 @P import Test1: B, A

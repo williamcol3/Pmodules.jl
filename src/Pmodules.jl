@@ -1,6 +1,6 @@
 module Pmodules
 
-export @Pmodule, @P
+export @Parent, @P
 
 
 """ Find the first undefined identifier in the lineage of another.
@@ -147,7 +147,7 @@ function is_parent(filepath::String, mod_fullname)::Bool
 end
 
 """ Define a parent module in the Pmodule system."""
-macro Pmodule()
+macro Parent()
     # First check to see that it satisfies the parent module requirement.
     fullmod = fullname(__module__)
     filepath = String(__source__.file)
